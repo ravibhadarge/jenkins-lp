@@ -1,6 +1,6 @@
 pipeline {
     agent {
-        label 'maven-docker-executor'
+        label any
     }
 
     options {
