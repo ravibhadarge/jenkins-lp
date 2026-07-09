@@ -1,4 +1,3 @@
-```groovy
 pipeline {
 
     agent any
@@ -22,74 +21,68 @@ pipeline {
         APP_NAME        = 'payment-gateway-service'
         REGISTRY_USER   = 'ravibhadarge'
         IMAGE_TAG       = "v_${env.BUILD_NUMBER}_${env.GIT_COMMIT ? env.GIT_COMMIT.take(7) : 'local'}"
-
-        SONAR_TOKEN     = credentials('sonarqube-analysis-token')
-        DOCKER_HUB_CRED = credentials('dockerhub-login-credentials')
     }
-
 
     stages {
 
-        stage('Initialize & Clean') {
+        stage('Initialize') {
             steps {
-                echo "Starting build sequence for ${env.APP_NAME}"
+                echo "Starting ${APP_NAME}"
 
                 sh '''
                     java -version
                     mvn -version
                     docker --version
-                    mvn clean
                 '''
             }
         }
 
 
-        stage('Compile & Unit Test') {
+        stage('Clean and Build') {
             steps {
-                echo "Building application"
-
                 sh '''
-                    mvn package
+                    mvn clean package -DskipTests=false
                 '''
             }
         }
 
 
-        stage('SonarQube Static Analysis') {
+        stage('SonarQube Analysis') {
             steps {
-
-                echo "Running SonarQube analysis"
 
                 withSonarQubeEnv('SonarQube-Server') {
 
-                    sh """
-                    mvn sonar:sonar \
-                    -Dsonar.projectKey=${APP_NAME} \
-                    -Dsonar.login=${SONAR_TOKEN}
-                    """
+                    withCredentials([
+                        string(
+                            credentialsId: 'sonarqube-analysis-token',
+                            variable: 'SONAR_TOKEN'
+                        )
+                    ]) {
+
+                        sh '''
+                        mvn sonar:sonar \
+                        -Dsonar.projectKey=${APP_NAME} \
+                        -Dsonar.login=${SONAR_TOKEN}
+                        '''
+                    }
                 }
             }
         }
 
 
-        stage('Build Container Image') {
+        stage('Docker Build') {
             steps {
-
-                echo "Building Docker image"
 
                 sh """
                 docker build \
-                --no-cache \
                 -t ${REGISTRY_USER}/${APP_NAME}:${IMAGE_TAG} .
                 """
             }
         }
 
 
-        stage('Push to Docker Hub') {
+        stage('Docker Login and Push') {
             steps {
-
-                echo "Pushing image to Docker Hub"
 
                 withCredentials([
                     usernamePassword(
@@ -101,7 +94,7 @@ pipeline {
 
                     sh '''
                     echo "$DOCKER_PASS" | docker login \
-                    --username "$DOCKER_USER" \
+                    -u "$DOCKER_USER" \
                     --password-stdin
                     '''
 
@@ -113,7 +106,7 @@ pipeline {
         }
 
 
-        stage('Deploy to Staging') {
+        stage('Deploy Staging') {
 
             when {
                 expression {
@@ -122,8 +115,6 @@ pipeline {
             }
 
             steps {
-
-                echo "Deploying to staging"
 
                 sh """
                 sed -i \
@@ -134,13 +125,7 @@ pipeline {
                 sh """
                 kubectl apply \
                 -f k8s/deployment.yaml \
-                --namespace=staging
-                """
-
-                sh """
-                kubectl rollout status \
-                deployment/${APP_NAME} \
-                --namespace=staging
+                -n staging
                 """
             }
         }
@@ -157,14 +142,14 @@ pipeline {
             steps {
 
                 input(
-                    message: "Approve production deployment for ${REGISTRY_USER}/${APP_NAME}:${IMAGE_TAG}?",
-                    ok: "Release to Production"
+                    message: "Deploy ${IMAGE_TAG} to production?",
+                    ok: "Approve"
                 )
             }
         }
 
 
-        stage('Deploy to Production') {
+        stage('Deploy Production') {
 
             when {
                 allOf {
@@ -177,8 +162,6 @@ pipeline {
 
             steps {
 
-                echo "Deploying to production"
-
                 sh """
                 sed -i \
                 's|IMAGE_PLACEHOLDER|${REGISTRY_USER}/${APP_NAME}:${IMAGE_TAG}|g' \
@@ -188,13 +171,7 @@ pipeline {
                 sh """
                 kubectl apply \
                 -f k8s/deployment.yaml \
-                --namespace=production
-                """
-
-                sh """
-                kubectl rollout status \
-                deployment/${APP_NAME} \
-                --namespace=production
+                -n production
                 """
             }
         }
@@ -205,31 +182,24 @@ pipeline {
 
         always {
 
-            echo "Cleaning workspace"
-
-            cleanWs()
-
             sh """
             docker rmi \
             ${REGISTRY_USER}/${APP_NAME}:${IMAGE_TAG} || true
             """
 
-            sh """
-            docker logout || true
-            """
+            sh "docker logout || true"
+
+            cleanWs()
         }
 
 
         success {
-
-            echo "Deployment succeeded successfully."
+            echo "Pipeline completed successfully"
         }
 
 
         failure {
-
-            echo "Pipeline failed. Check console logs."
+            echo "Pipeline failed"
         }
     }
 }
-```
