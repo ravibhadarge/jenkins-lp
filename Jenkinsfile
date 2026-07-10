@@ -2,6 +2,7 @@ pipeline {
 
     agent any
 
+
     options {
         timeout(time: 2, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '30'))
@@ -9,64 +10,49 @@ pipeline {
         timestamps()
     }
 
+
     parameters {
+
         choice(
             name: 'DEPLOY_ENV',
-            choices: ['staging', 'production'],
-            description: 'Select deployment environment'
+            choices: [
+                'staging',
+                'production'
+            ],
+            description: 'Choose deployment environment'
         )
+
     }
+
 
     environment {
 
-        APP_NAME = 'payment-gateway-service'
+        APP_NAME = "payment-gateway-service"
 
-        DOCKER_REGISTRY = 'docker.io'
+        DOCKER_USER = "ravibhadarge"
 
-        REGISTRY_USER = 'ravibhadarge'
-
-        IMAGE_NAME = "${REGISTRY_USER}/${APP_NAME}"
+        IMAGE_NAME = "${DOCKER_USER}/${APP_NAME}"
 
         IMAGE_TAG = "v${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
 
-        SONAR_SERVER = 'SonarQube-Server'
     }
+
 
 
     stages {
 
 
-        stage('Checkout') {
+        stage('Checkout Code') {
 
             steps {
 
                 checkout scm
 
                 sh '''
-                echo "Git Commit:"
                 git rev-parse HEAD
                 '''
             }
-        }
 
-
-
-        stage('Initialize') {
-
-            steps {
-
-                sh '''
-                echo "Application: ${APP_NAME}"
-
-                java -version
-
-                mvn -version
-
-                docker --version
-
-                kubectl version --client
-                '''
-            }
         }
 
 
@@ -76,36 +62,49 @@ pipeline {
             steps {
 
                 sh '''
-                mvn clean package
+                set -e
+
+                mvn clean package -DskipTests=false
+
                 '''
             }
+
         }
 
 
 
-        stage('SonarQube Scan') {
+        stage('SonarQube Analysis') {
 
             steps {
 
-                withSonarQubeEnv("${SONAR_SERVER}") {
+
+                withSonarQubeEnv('SonarQube-Server') {
+
 
                     withCredentials([
+
                         string(
                             credentialsId: 'sonarqube-analysis-token',
                             variable: 'SONAR_TOKEN'
                         )
+
                     ]) {
 
 
                         sh '''
+
                         mvn sonar:sonar \
                         -Dsonar.projectKey=${APP_NAME} \
                         -Dsonar.login=${SONAR_TOKEN}
+
                         '''
 
                     }
+
                 }
+
             }
+
         }
 
 
@@ -115,6 +114,7 @@ pipeline {
 
             steps {
 
+
                 sh '''
 
                 docker build \
@@ -123,53 +123,57 @@ pipeline {
                 docker images ${IMAGE_NAME}
 
                 '''
+
             }
+
         }
 
 
 
 
-        stage('Docker Hub Login') {
+        stage('Docker Login') {
 
             steps {
 
 
                 withCredentials([
 
+
                     usernamePassword(
 
                         credentialsId: 'dockerhub-login-credentials',
 
-                        usernameVariable: 'DOCKER_USERNAME',
+                        usernameVariable: 'USERNAME',
 
-                        passwordVariable: 'DOCKER_TOKEN'
+                        passwordVariable: 'PASSWORD'
 
                     )
+
 
                 ]) {
 
 
                     sh '''
 
-                    echo "$DOCKER_TOKEN" | docker login \
-                    --username "$DOCKER_USERNAME" \
+                    echo "$PASSWORD" | docker login \
+                    -u "$USERNAME" \
                     --password-stdin
-
 
                     '''
 
                 }
+
             }
+
         }
 
 
 
 
 
-        stage('Push Docker Image') {
+        stage('Docker Push') {
 
             steps {
-
 
                 sh '''
 
@@ -178,6 +182,7 @@ pipeline {
                 '''
 
             }
+
         }
 
 
@@ -203,26 +208,24 @@ pipeline {
 
                 sh '''
 
-                kubectl create namespace staging \
-                --dry-run=client -o yaml | kubectl apply -f -
-
-
                 sed "s|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g" \
-                k8s/deployment.yaml > k8s/deployment-${BUILD_NUMBER}.yaml
+                k8s/deployment.yaml > deployment.yaml
 
 
                 kubectl apply \
-                -f k8s/deployment-${BUILD_NUMBER}.yaml \
+                -f deployment.yaml \
                 -n staging
 
 
-                kubectl rollout status deployment/${APP_NAME} \
+                kubectl rollout status \
+                deployment/${APP_NAME} \
                 -n staging
 
 
                 '''
 
             }
+
         }
 
 
@@ -248,7 +251,7 @@ pipeline {
 
                 input(
 
-                    message: "Deploy ${IMAGE_TAG} to production?",
+                    message: "Deploy ${IMAGE_TAG} to Production?",
 
                     ok: "Deploy"
 
@@ -257,7 +260,6 @@ pipeline {
             }
 
         }
-
 
 
 
@@ -282,12 +284,9 @@ pipeline {
 
                     }
 
-
                 }
 
-
             }
-
 
 
             steps {
@@ -295,24 +294,19 @@ pipeline {
 
                 sh '''
 
-
-                kubectl create namespace production \
-                --dry-run=client -o yaml | kubectl apply -f -
-
-
-
                 sed "s|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g" \
-                k8s/deployment.yaml > k8s/deployment-${BUILD_NUMBER}.yaml
+                k8s/deployment.yaml > deployment.yaml
 
 
 
                 kubectl apply \
-                -f k8s/deployment-${BUILD_NUMBER}.yaml \
+                -f deployment.yaml \
                 -n production
 
 
 
-                kubectl rollout status deployment/${APP_NAME} \
+                kubectl rollout status \
+                deployment/${APP_NAME} \
                 -n production
 
 
@@ -323,8 +317,8 @@ pipeline {
         }
 
 
-    }
 
+    }
 
 
 
@@ -354,8 +348,7 @@ pipeline {
         success {
 
 
-            echo "Deployment completed successfully: ${IMAGE_NAME}:${IMAGE_TAG}"
-
+            echo "SUCCESS: ${IMAGE_NAME}:${IMAGE_TAG}"
 
         }
 
@@ -364,8 +357,7 @@ pipeline {
         failure {
 
 
-            echo "Pipeline failed"
-
+            echo "FAILED: Check previous stage logs"
 
         }
 
