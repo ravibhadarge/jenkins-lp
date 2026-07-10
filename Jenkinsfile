@@ -2,7 +2,6 @@ pipeline {
 
     agent any
 
-
     options {
         timeout(time: 2, unit: 'HOURS')
         buildDiscarder(logRotator(numToKeepStr: '30'))
@@ -15,11 +14,8 @@ pipeline {
 
         choice(
             name: 'DEPLOY_ENV',
-            choices: [
-                'staging',
-                'production'
-            ],
-            description: 'Choose deployment environment'
+            choices: ['staging', 'production'],
+            description: 'Select deployment environment'
         )
 
     }
@@ -27,37 +23,38 @@ pipeline {
 
     environment {
 
-        APP_NAME = "payment-gateway-service"
+        APP_NAME = 'payment-gateway-service'
 
-        DOCKER_USER = "ravibhadarge"
+        DOCKER_REPO = 'ravibhadarge/payment-gateway-service'
 
-        IMAGE_NAME = "${DOCKER_USER}/${APP_NAME}"
+        IMAGE_TAG = "v-${BUILD_NUMBER}"
 
-        IMAGE_TAG = "v${BUILD_NUMBER}-${GIT_COMMIT.take(7)}"
+        IMAGE = "${DOCKER_REPO}:${IMAGE_TAG}"
 
     }
-
 
 
     stages {
 
 
-        stage('Checkout Code') {
+        stage('Checkout') {
 
             steps {
 
                 checkout scm
 
                 sh '''
+                echo "Commit:"
                 git rev-parse HEAD
                 '''
+
             }
 
         }
 
 
 
-        stage('Build Application') {
+        stage('Build') {
 
             steps {
 
@@ -67,13 +64,14 @@ pipeline {
                 mvn clean package -DskipTests=false
 
                 '''
+
             }
 
         }
 
 
 
-        stage('SonarQube Analysis') {
+        stage('SonarQube Scan') {
 
             steps {
 
@@ -93,6 +91,8 @@ pipeline {
 
                         sh '''
 
+                        set -e
+
                         mvn sonar:sonar \
                         -Dsonar.projectKey=${APP_NAME} \
                         -Dsonar.login=${SONAR_TOKEN}
@@ -110,23 +110,26 @@ pipeline {
 
 
 
+
         stage('Docker Build') {
 
             steps {
 
-
                 sh '''
 
-                docker build \
-                -t ${IMAGE_NAME}:${IMAGE_TAG} .
+                set -e
 
-                docker images ${IMAGE_NAME}
+                docker build \
+                -t ${IMAGE} .
+
+                docker images ${DOCKER_REPO}
 
                 '''
 
             }
 
         }
+
 
 
 
@@ -143,9 +146,9 @@ pipeline {
 
                         credentialsId: 'dockerhub-login-credentials',
 
-                        usernameVariable: 'USERNAME',
+                        usernameVariable: 'DOCKER_USERNAME',
 
-                        passwordVariable: 'PASSWORD'
+                        passwordVariable: 'DOCKER_PASSWORD'
 
                     )
 
@@ -155,9 +158,13 @@ pipeline {
 
                     sh '''
 
-                    echo "$PASSWORD" | docker login \
-                    -u "$USERNAME" \
+                    set -e
+
+
+                    echo "$DOCKER_PASSWORD" | docker login \
+                    -u "$DOCKER_USERNAME" \
                     --password-stdin
+
 
                     '''
 
@@ -170,14 +177,15 @@ pipeline {
 
 
 
-
         stage('Docker Push') {
 
             steps {
 
                 sh '''
 
-                docker push ${IMAGE_NAME}:${IMAGE_TAG}
+                set -e
+
+                docker push ${IMAGE}
 
                 '''
 
@@ -208,7 +216,10 @@ pipeline {
 
                 sh '''
 
-                sed "s|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g" \
+                set -e
+
+
+                sed "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
                 k8s/deployment.yaml > deployment.yaml
 
 
@@ -251,15 +262,17 @@ pipeline {
 
                 input(
 
-                    message: "Deploy ${IMAGE_TAG} to Production?",
+                    message: "Deploy ${IMAGE} to production?",
 
-                    ok: "Deploy"
+                    ok: "Approve"
 
                 )
+
 
             }
 
         }
+
 
 
 
@@ -278,13 +291,12 @@ pipeline {
 
                     expression {
 
-
                         params.DEPLOY_ENV == 'production'
-
 
                     }
 
                 }
+
 
             }
 
@@ -294,7 +306,10 @@ pipeline {
 
                 sh '''
 
-                sed "s|IMAGE_PLACEHOLDER|${IMAGE_NAME}:${IMAGE_TAG}|g" \
+                set -e
+
+
+                sed "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
                 k8s/deployment.yaml > deployment.yaml
 
 
@@ -317,8 +332,8 @@ pipeline {
         }
 
 
-
     }
+
 
 
 
@@ -332,9 +347,7 @@ pipeline {
 
             docker logout || true
 
-
-            docker rmi ${IMAGE_NAME}:${IMAGE_TAG} || true
-
+            docker rmi ${IMAGE} || true
 
             '''
 
@@ -347,8 +360,7 @@ pipeline {
 
         success {
 
-
-            echo "SUCCESS: ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "SUCCESS: ${IMAGE}"
 
         }
 
@@ -356,8 +368,7 @@ pipeline {
 
         failure {
 
-
-            echo "FAILED: Check previous stage logs"
+            echo "FAILED - check the stage above"
 
         }
 
