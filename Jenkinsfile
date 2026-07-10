@@ -1,8 +1,6 @@
 pipeline {
 
-    agent {
-        label 'maven-docker-executor'
-    }
+    agent any
 
 
     options {
@@ -40,7 +38,9 @@ pipeline {
 
         DOCKER_IMAGE = 'ravibhadarge/payment-gateway-service'
 
-        KUBECONFIG = credentials('kind-kubeconfig')
+        PATH = "/usr/local/bin:${env.PATH}"
+
+        KUBECONFIG = "/var/lib/jenkins/.kube/config"
 
     }
 
@@ -58,21 +58,21 @@ pipeline {
 
                 script {
 
-                    env.COMMIT_ID = sh(
+                    env.GIT_COMMIT_SHORT = sh(
                         script: 'git rev-parse --short HEAD',
                         returnStdout: true
                     ).trim()
 
 
                     env.IMAGE_TAG =
-                    "v-${BUILD_NUMBER}-${env.COMMIT_ID}"
+                    "v-${BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
 
 
                     env.IMAGE =
                     "${DOCKER_IMAGE}:${env.IMAGE_TAG}"
 
 
-                    echo "IMAGE=${env.IMAGE}"
+                    echo "Image: ${env.IMAGE}"
 
                 }
 
@@ -101,7 +101,7 @@ pipeline {
 
 
 
-        stage('Test') {
+        stage('Unit Test') {
 
             steps {
 
@@ -181,7 +181,7 @@ pipeline {
                     usernamePassword(
                         credentialsId: 'dockerhub-login-credentials',
                         usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASSWORD'
+                        passwordVariable: 'DOCKER_PASS'
                     )
 
                 ]) {
@@ -189,7 +189,7 @@ pipeline {
 
                     sh '''
 
-                    echo "$DOCKER_PASSWORD" | docker login \
+                    echo "$DOCKER_PASS" | docker login \
                     -u "$DOCKER_USER" \
                     --password-stdin
 
@@ -213,6 +213,8 @@ pipeline {
 
                 docker build \
                 -t ${IMAGE} .
+
+                docker images ${DOCKER_IMAGE}
 
                 '''
 
@@ -242,18 +244,21 @@ pipeline {
 
 
 
-        stage('Kubernetes Connection Test') {
+        stage('Kind Kubernetes Check') {
 
             steps {
 
                 sh '''
+
+                export PATH=/usr/local/bin:$PATH
+
 
                 echo "Kubernetes Context"
 
                 kubectl config current-context
 
 
-                echo "Cluster Nodes"
+                echo "Kubernetes Nodes"
 
                 kubectl get nodes
 
@@ -286,6 +291,9 @@ pipeline {
 
                 sh '''
 
+                export PATH=/usr/local/bin:$PATH
+
+
                 kubectl create namespace staging \
                 --dry-run=client -o yaml | kubectl apply -f -
 
@@ -293,12 +301,13 @@ pipeline {
 
                 sed \
                 "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
-                k8s/deployment.yaml > deployment-staging.yaml
+                k8s/deployment.yaml \
+                > deployment.yaml
 
 
 
                 kubectl apply \
-                -f deployment-staging.yaml \
+                -f deployment.yaml \
                 -n staging
 
 
@@ -306,6 +315,7 @@ pipeline {
                 kubectl rollout status \
                 deployment/${APP_NAME} \
                 -n staging
+
 
                 '''
 
@@ -318,7 +328,6 @@ pipeline {
 
 
         stage('Production Approval') {
-
 
             when {
 
@@ -333,9 +342,10 @@ pipeline {
 
             steps {
 
+
                 input(
                     message: "Deploy ${IMAGE} to production?",
-                    ok: "Approve"
+                    ok: "Deploy"
                 )
 
             }
@@ -348,12 +358,9 @@ pipeline {
 
         stage('Deploy Production') {
 
-
             when {
 
-
                 allOf {
-
 
                     branch 'main'
 
@@ -374,6 +381,9 @@ pipeline {
 
                 sh '''
 
+                export PATH=/usr/local/bin:$PATH
+
+
                 kubectl create namespace production \
                 --dry-run=client -o yaml | kubectl apply -f -
 
@@ -381,12 +391,13 @@ pipeline {
 
                 sed \
                 "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
-                k8s/deployment.yaml > deployment-production.yaml
+                k8s/deployment.yaml \
+                > deployment.yaml
 
 
 
                 kubectl apply \
-                -f deployment-production.yaml \
+                -f deployment.yaml \
                 -n production
 
 
@@ -413,7 +424,6 @@ pipeline {
 
         always {
 
-
             sh '''
 
             docker logout || true
@@ -433,7 +443,7 @@ pipeline {
 
         success {
 
-            echo "Deployment Successful: ${IMAGE}"
+            echo "SUCCESS: ${IMAGE}"
 
         }
 
@@ -441,7 +451,7 @@ pipeline {
 
         failure {
 
-            echo "Pipeline Failed"
+            echo "FAILED: Check previous stage logs"
 
         }
 
