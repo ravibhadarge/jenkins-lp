@@ -1,37 +1,47 @@
 pipeline {
 
-    agent any
+    agent {
+        label 'maven-docker-executor'
+    }
+
 
     options {
+
         timeout(time: 2, unit: 'HOURS')
+
         buildDiscarder(logRotator(numToKeepStr: '30'))
+
         disableConcurrentBuilds()
+
         timestamps()
+
     }
+
 
 
     parameters {
 
         choice(
             name: 'DEPLOY_ENV',
-            choices: ['staging', 'production'],
-            description: 'Select deployment environment'
+            choices: [
+                'staging',
+                'production'
+            ],
+            description: 'Deployment Environment'
         )
 
     }
+
 
 
     environment {
 
         APP_NAME = 'payment-gateway-service'
 
-        DOCKER_REPO = 'ravibhadarge/payment-gateway-service'
-
-        IMAGE_TAG = "v-${BUILD_NUMBER}"
-
-        IMAGE = "${DOCKER_REPO}:${IMAGE_TAG}"
+        DOCKER_REPOSITORY = 'ravibhadarge/payment-gateway-service'
 
     }
+
 
 
     stages {
@@ -43,10 +53,24 @@ pipeline {
 
                 checkout scm
 
-                sh '''
-                echo "Commit:"
-                git rev-parse HEAD
-                '''
+
+                script {
+
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+
+
+                    env.IMAGE_TAG = "v-${BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+
+                    env.IMAGE =
+                    "${DOCKER_REPOSITORY}:${env.IMAGE_TAG}"
+
+
+                    echo "Building image: ${env.IMAGE}"
+
+                }
 
             }
 
@@ -54,14 +78,13 @@ pipeline {
 
 
 
-        stage('Build') {
+        stage('Maven Build') {
 
             steps {
 
                 sh '''
-                set -e
 
-                mvn clean package -DskipTests=false
+                mvn clean package
 
                 '''
 
@@ -71,7 +94,38 @@ pipeline {
 
 
 
-        stage('SonarQube Scan') {
+        stage('Unit Test') {
+
+            steps {
+
+                sh '''
+
+                mvn test
+
+                '''
+
+            }
+
+
+            post {
+
+                always {
+
+                    junit(
+                        testResults: 'target/surefire-reports/*.xml',
+                        allowEmptyResults: true
+                    )
+
+                }
+
+            }
+
+        }
+
+
+
+
+        stage('SonarQube Analysis') {
 
             steps {
 
@@ -91,15 +145,47 @@ pipeline {
 
                         sh '''
 
-                        set -e
-
                         mvn sonar:sonar \
                         -Dsonar.projectKey=${APP_NAME} \
-                        -Dsonar.login=${SONAR_TOKEN}
+                        -Dsonar.token=${SONAR_TOKEN}
 
                         '''
 
                     }
+
+                }
+
+            }
+
+        }
+
+
+
+
+
+        stage('Docker Login') {
+
+            steps {
+
+
+                withCredentials([
+
+                    usernamePassword(
+                        credentialsId: 'dockerhub-login-credentials',
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )
+
+                ]) {
+
+
+                    sh '''
+
+                    echo "$DOCKER_PASSWORD" | docker login \
+                    -u "$DOCKER_USERNAME" \
+                    --password-stdin
+
+                    '''
 
                 }
 
@@ -117,12 +203,8 @@ pipeline {
 
                 sh '''
 
-                set -e
-
                 docker build \
                 -t ${IMAGE} .
-
-                docker images ${DOCKER_REPO}
 
                 '''
 
@@ -134,56 +216,11 @@ pipeline {
 
 
 
-        stage('Docker Login') {
-
-            steps {
-
-
-                withCredentials([
-
-
-                    usernamePassword(
-
-                        credentialsId: 'dockerhub-login-credentials',
-
-                        usernameVariable: 'DOCKER_USERNAME',
-
-                        passwordVariable: 'DOCKER_PASSWORD'
-
-                    )
-
-
-                ]) {
-
-
-                    sh '''
-
-                    set -e
-
-
-                    echo "$DOCKER_PASSWORD" | docker login \
-                    -u "$DOCKER_USERNAME" \
-                    --password-stdin
-
-
-                    '''
-
-                }
-
-            }
-
-        }
-
-
-
-
         stage('Docker Push') {
 
             steps {
 
                 sh '''
-
-                set -e
 
                 docker push ${IMAGE}
 
@@ -211,27 +248,27 @@ pipeline {
             }
 
 
+
             steps {
 
 
                 sh '''
 
-                set -e
+                sed \
+                "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
+                k8s/deployment.yaml > deployment-staging.yaml
 
-
-                sed "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
-                k8s/deployment.yaml > deployment.yaml
 
 
                 kubectl apply \
-                -f deployment.yaml \
+                -f deployment-staging.yaml \
                 -n staging
+
 
 
                 kubectl rollout status \
                 deployment/${APP_NAME} \
                 -n staging
-
 
                 '''
 
@@ -268,7 +305,6 @@ pipeline {
 
                 )
 
-
             }
 
         }
@@ -297,7 +333,6 @@ pipeline {
 
                 }
 
-
             }
 
 
@@ -306,16 +341,14 @@ pipeline {
 
                 sh '''
 
-                set -e
-
-
-                sed "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
-                k8s/deployment.yaml > deployment.yaml
+                sed \
+                "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
+                k8s/deployment.yaml > deployment-production.yaml
 
 
 
                 kubectl apply \
-                -f deployment.yaml \
+                -f deployment-production.yaml \
                 -n production
 
 
@@ -323,7 +356,6 @@ pipeline {
                 kubectl rollout status \
                 deployment/${APP_NAME} \
                 -n production
-
 
                 '''
 
@@ -347,7 +379,9 @@ pipeline {
 
             docker logout || true
 
+
             docker rmi ${IMAGE} || true
+
 
             '''
 
@@ -368,7 +402,7 @@ pipeline {
 
         failure {
 
-            echo "FAILED - check the stage above"
+            echo "FAILED: Review the stage logs above"
 
         }
 
