@@ -38,7 +38,9 @@ pipeline {
 
         APP_NAME = 'payment-gateway-service'
 
-        DOCKER_REPOSITORY = 'ravibhadarge/payment-gateway-service'
+        DOCKER_IMAGE = 'ravibhadarge/payment-gateway-service'
+
+        KUBECONFIG = credentials('kind-kubeconfig')
 
     }
 
@@ -56,19 +58,21 @@ pipeline {
 
                 script {
 
-                    env.GIT_COMMIT_SHORT = sh(
+                    env.COMMIT_ID = sh(
                         script: 'git rev-parse --short HEAD',
                         returnStdout: true
                     ).trim()
 
 
-                    env.IMAGE_TAG = "v-${BUILD_NUMBER}-${env.GIT_COMMIT_SHORT}"
+                    env.IMAGE_TAG =
+                    "v-${BUILD_NUMBER}-${env.COMMIT_ID}"
+
 
                     env.IMAGE =
-                    "${DOCKER_REPOSITORY}:${env.IMAGE_TAG}"
+                    "${DOCKER_IMAGE}:${env.IMAGE_TAG}"
 
 
-                    echo "Building image: ${env.IMAGE}"
+                    echo "IMAGE=${env.IMAGE}"
 
                 }
 
@@ -78,13 +82,14 @@ pipeline {
 
 
 
-        stage('Maven Build') {
+
+        stage('Build') {
 
             steps {
 
                 sh '''
 
-                mvn clean package
+                mvn clean package -DskipTests=false
 
                 '''
 
@@ -94,7 +99,9 @@ pipeline {
 
 
 
-        stage('Unit Test') {
+
+
+        stage('Test') {
 
             steps {
 
@@ -121,6 +128,7 @@ pipeline {
             }
 
         }
+
 
 
 
@@ -172,7 +180,7 @@ pipeline {
 
                     usernamePassword(
                         credentialsId: 'dockerhub-login-credentials',
-                        usernameVariable: 'DOCKER_USERNAME',
+                        usernameVariable: 'DOCKER_USER',
                         passwordVariable: 'DOCKER_PASSWORD'
                     )
 
@@ -182,7 +190,7 @@ pipeline {
                     sh '''
 
                     echo "$DOCKER_PASSWORD" | docker login \
-                    -u "$DOCKER_USERNAME" \
+                    -u "$DOCKER_USER" \
                     --password-stdin
 
                     '''
@@ -234,8 +242,33 @@ pipeline {
 
 
 
-        stage('Deploy Staging') {
+        stage('Kubernetes Connection Test') {
 
+            steps {
+
+                sh '''
+
+                echo "Kubernetes Context"
+
+                kubectl config current-context
+
+
+                echo "Cluster Nodes"
+
+                kubectl get nodes
+
+
+                '''
+
+            }
+
+        }
+
+
+
+
+
+        stage('Deploy Staging') {
 
             when {
 
@@ -248,11 +281,15 @@ pipeline {
             }
 
 
-
             steps {
 
 
                 sh '''
+
+                kubectl create namespace staging \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+
 
                 sed \
                 "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
@@ -296,13 +333,9 @@ pipeline {
 
             steps {
 
-
                 input(
-
                     message: "Deploy ${IMAGE} to production?",
-
                     ok: "Approve"
-
                 )
 
             }
@@ -341,6 +374,11 @@ pipeline {
 
                 sh '''
 
+                kubectl create namespace production \
+                --dry-run=client -o yaml | kubectl apply -f -
+
+
+
                 sed \
                 "s|IMAGE_PLACEHOLDER|${IMAGE}|g" \
                 k8s/deployment.yaml > deployment-production.yaml
@@ -356,6 +394,7 @@ pipeline {
                 kubectl rollout status \
                 deployment/${APP_NAME} \
                 -n production
+
 
                 '''
 
@@ -394,7 +433,7 @@ pipeline {
 
         success {
 
-            echo "SUCCESS: ${IMAGE}"
+            echo "Deployment Successful: ${IMAGE}"
 
         }
 
@@ -402,7 +441,7 @@ pipeline {
 
         failure {
 
-            echo "FAILED: Review the stage logs above"
+            echo "Pipeline Failed"
 
         }
 
